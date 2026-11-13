@@ -2,6 +2,7 @@
 //!
 //! See README.md for the config format and the commands.
 
+pub mod archive;
 pub mod check;
 pub mod classify;
 pub mod config;

@@ -288,3 +288,128 @@ fn groups_a_long_list_of_unclassified_files() {
          Add each file to exactly one list:\n  Makefile\n  vendor/  (25 files)\n\n"
     );
 }
+
+const PACKAGE_CONFIG: &str = r#"version: 1
+stages: [package]
+
+remove_before:
+  package:
+    include: ['.*', test/, '*.md']
+    exclude: [README.md]
+
+keep:
+  include: [lib/, README.md, package.json]
+
+build_output:
+  - dist/
+"#;
+
+/// A gzipped tarball of `files`, each under `prefix`.
+fn tgz(path: &Path, prefix: &str, files: &[&str]) {
+    let mut b = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+    for file in files {
+        let mut h = tar::Header::new_ustar();
+        h.set_size(1);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, format!("{prefix}{file}"), &b"x"[..]).unwrap();
+    }
+    std::fs::write(path, b.into_inner().unwrap().finish().unwrap()).unwrap();
+}
+
+fn package_repo() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    write(d, ".shiplist.yml", PACKAGE_CONFIG);
+    for f in ["README.md", "CHANGELOG.md", "package.json", "lib/index.js", "test/index.test.js"] {
+        write(d, f, "\n");
+    }
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-qm", "init"]);
+    tmp
+}
+
+#[test]
+fn verify_an_npm_style_package() {
+    let r = package_repo();
+    let out = tempfile::tempdir().unwrap();
+    let pkg = out.path().join("pkg-1.0.0.tgz");
+    let pkg_arg = pkg.to_str().unwrap();
+    tgz(&pkg, "package/", &["package.json", "README.md", "lib/index.js", "dist/index.min.js"]);
+    let o = shiplist(r.path(), &["verify", "package", "--archive", pkg_arg, "--root", "package/"], false);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(stdout(&o), format!("{pkg_arg}:package/: 4 files, all allowed at stage package\n"));
+
+    tgz(&pkg, "package/", &["package.json", "lib/index.js", "test/index.test.js", "CHANGELOG.md", "notes.txt"]);
+    let o = shiplist(r.path(), &["verify", "package", "--archive", pkg_arg, "--root", "package/"], false);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stderr(&o),
+        "Files that shouldn't be here at stage package:\n  CHANGELOG.md  (remove_before.package)\n  \
+         test/index.test.js  (remove_before.package)\n\n\
+         Files in no list and not covered by `build_output`:\n  notes.txt\n\n"
+    );
+
+    // A wrong --root names the top level instead of reporting every file
+    let o = shiplist(r.path(), &["verify", "package", "--archive", pkg_arg, "--root", "pkg/"], false);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("has no files under pkg/: its top level has package"), "{}", stderr(&o));
+
+    let o = shiplist(r.path(), &["verify", "package", "--dir", ".", "--root", "package/"], false);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("--root goes with --image or --archive"), "{}", stderr(&o));
+}
+
+#[test]
+fn verify_a_gem() {
+    let r = package_repo();
+    let out = tempfile::tempdir().unwrap();
+    let data = out.path().join("data.tar.gz");
+    tgz(&data, "", &["lib/index.js", "test/index.test.js"]);
+    let mut b = tar::Builder::new(Vec::new());
+    for (name, bytes) in [("metadata.gz", b"x".to_vec()), ("data.tar.gz", std::fs::read(&data).unwrap())] {
+        let mut h = tar::Header::new_ustar();
+        h.set_size(bytes.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, name, bytes.as_slice()).unwrap();
+    }
+    let gem = out.path().join("pkg-1.0.0.gem");
+    std::fs::write(&gem, b.into_inner().unwrap()).unwrap();
+    let o = shiplist(r.path(), &["--format", "json", "verify", "package", "--archive", gem.to_str().unwrap()], false);
+    assert_eq!(o.status.code(), Some(1));
+    let v = json(&o);
+    assert_eq!(v["removed_but_present"][0]["file"], "test/index.test.js");
+    assert_eq!(v["files"], 2);
+}
+
+#[test]
+fn check_a_package_in_a_subdirectory() {
+    let r = repo();
+    let pkg = r.path().join("packages/client");
+    write(&pkg, ".shiplist.yml", PACKAGE_CONFIG);
+    for f in ["README.md", "package.json", "lib/index.js"] {
+        write(&pkg, f, "\n");
+    }
+    write(r.path(), ".shiplist.yml", &CONFIG.replace("- app/\n", "- app/\n    - packages/\n"));
+    git(r.path(), &["add", "-A"]);
+    git(r.path(), &["commit", "-qm", "package"]);
+
+    // The package's own config, run in the package's directory, sees only the package's files
+    let o = shiplist(&pkg, &["list", "package"], false);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "README.md\nlib/index.js\npackage.json\n");
+
+    // The repository's config is never applied to a subdirectory
+    let o = shiplist(r.path(), &["check", "--dir", "packages/client"], false);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("give it its own config in that directory"), "{}", stderr(&o));
+
+    // prune checks only the package's directory for uncommitted changes
+    write(r.path(), "app/new.rb", "\n");
+    let o = shiplist(&pkg, &["prune", "package", "--yes"], false);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(!pkg.join(".shiplist.yml").exists());
+    assert!(pkg.join("lib/index.js").exists());
+}

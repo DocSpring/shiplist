@@ -1,7 +1,8 @@
 # shiplist
 
 shiplist puts every file in your repository in exactly one list, and removes each list before its stage of the build.
-CI fails when a file isn't in a list, so every new file needs a decision about whether it ships.
+CI fails when a file isn't in a list, so every new file needs a decision about whether it ships. Then it checks what
+actually shipped: a Docker image, an npm package, a gem, a wheel, a crate or any other tar or zip file.
 
 ```text
 $ shiplist check
@@ -9,9 +10,8 @@ Files in no list (add each to exactly one list):
   config/partner_rates.yml
 ```
 
-It's a small, static Rust binary for CI pipelines and Docker builds. It's most useful when you ship an image to people
-outside your company, such as an on-premise install, where anything in the image is theirs to read. It also helps with
-hosted apps: every file in a production image is one more file that someone who gets into a container can read.
+It's a small, static Rust binary for CI pipelines, Docker builds and release workflows. It's most useful when what you
+build leaves your hands: an image for an on-premise install, or a package anyone can download from a registry.
 
 ## Why
 
@@ -27,8 +27,8 @@ shiplist turns that around:
   `test` list before running the tests, so code that reads a file production won't have fails in CI instead of in
   production.
 - **Patterns that match nothing fail.** The config can't fill up with paths for files that were deleted years ago.
-- **Build output gets checked too.** git never sees what the build creates, such as source maps, so `shiplist verify`
-  checks the real build directory, or an image saved with `docker save`, against the config.
+- **What you ship gets checked too.** git never sees what the build creates, such as source maps, so `shiplist verify`
+  checks the real build directory, an image saved with `docker save`, or a package, against the config.
 
 The lists work like double-entry bookkeeping: a file that one list leaves out (with an `exclude`) has to be claimed by
 another list, and a file claimed twice is an error. So adding or changing a pattern can never quietly move a file into
@@ -118,6 +118,10 @@ directory level. It also rejects a leading `/`, `./` or `!`: put exceptions in t
 | `shiplist prune <stage>` | Deletes the files removed at or before a stage. A directory whose tracked files are all removed goes with everything in it. |
 | `shiplist verify <stage> --dir <dir>` | Fails on any file in the directory that the stage shouldn't have, that matches `forbid`, or that's in no list and not `build_output`. |
 | `shiplist verify <stage> --image <tar> --root /app` | The same for an image saved with `docker save`, read without Docker. `--root` is where the repository's files are inside the image. |
+| `shiplist verify <stage> --archive <file> --root <dir>` | The same for a package or any tar, `.tar.gz` or zip file: npm and Python source packages, `.crate`, Helm charts, wheels, `.nupkg`, `.jar`, `.gem` and Hex packages. `--root` strips the folder the package puts everything in, such as `package/` for npm. |
+
+`check`, `list` and `prune` work at the top of a git working tree, or in a directory inside one that has its own
+`.shiplist.yml`, such as a package in a monorepo. They never apply a repository's config to one of its subdirectories.
 
 `check` and `verify` exit with 1 when they find a problem, and every command exits with 2 on an error (an invalid
 config, an unknown stage).
@@ -164,6 +168,101 @@ COPY shiplist /usr/local/bin/shiplist
 COPY .shiplist.yml /tmp/.shiplist.yml
 RUN CI=true shiplist --config /tmp/.shiplist.yml prune on-premise --dir /app --no-git
 ```
+
+## Packages
+
+The same check works for anything you publish. Your packaging tool's own settings (`files` in package.json, the
+gemspec's `files`, `MANIFEST.in`, `include` in Cargo.toml) still decide what goes in, and shiplist checks the package it
+built before you publish it. Give the config a `package` stage:
+
+```yaml
+version: 1
+stages: [package]
+
+remove_before:
+  package:
+    include: ['.*', test/, docs/]
+
+keep:
+  include: [lib/, package.json, README.md, LICENSE]
+
+forbid:
+  - '**/.env*'
+  - '**/*.map'
+```
+
+Then build the package and verify it in your release workflow:
+
+```bash
+npm pack
+shiplist verify package --archive my-package-1.2.0.tgz --root package/
+```
+
+```text
+Forbidden files:
+  .env.development  (forbid: **/.env*)
+
+Files that shouldn't be here at stage package:
+  test/index.test.js  (remove_before.package)
+```
+
+| Package | Build | Verify |
+| --- | --- | --- |
+| npm | `npm pack` | `--archive name-1.2.0.tgz --root package/` |
+| Ruby gem | `gem build name.gemspec` | `--archive name-1.2.0.gem` (shiplist reads the files inside its `data.tar.gz`) |
+| Python source | `python -m build`, `uv build` | `--archive dist/name-1.2.0.tar.gz --root name-1.2.0/`, with `PKG-INFO` in `build_output` |
+| Python wheel (flat layout) | `python -m build`, `uv build` | `--archive dist/name-1.2.0-py3-none-any.whl`, with `'name-*.dist-info/**'` in `build_output` |
+| Rust crate | `cargo package` | `--archive target/package/name-1.2.0.crate --root name-1.2.0/`, with `Cargo.toml.orig` and `.cargo_vcs_info.json` in `build_output` |
+| Helm chart | `helm package .` | `--archive name-1.2.0.tgz --root name/`, with the config in the chart's directory |
+| Anything zipped | `zip -r bundle.zip ...` | `--archive bundle.zip` |
+
+The paths in the package have to be the repository's paths. A wheel built from a `src/` layout stores `src/name/` as
+`name/`, and a `.jar` or `.nupkg` holds compiled code, so verify the source package for those, or check them with
+`forbid` and `build_output` alone.
+
+`build_output` only covers files that no list claims, so keep a broad pattern such as `'.*'` from claiming a file the
+packaging tool adds (`.cargo_vcs_info.json`): list your dotfiles by name instead. shiplist checks its own crate this way
+in [its CI](.github/workflows/ci.yml).
+
+### Let shiplist decide what goes in
+
+Two ways to make shiplist's lists decide the package's contents, rather than only check them:
+
+- **Give the packaging tool the list.** `shiplist list package` prints the files the package should have, one per line,
+  for anything that takes a list of files. In a gemspec:
+
+  ```ruby
+  spec.files = IO.popen(%w[shiplist list package], &:read).split("\n")
+  ```
+
+  Bundler evaluates the gemspec too, so everyone who runs `bundle install` in the repository needs shiplist installed.
+  `tar -T`, `zip -@` and `rsync --files-from` read the same list from stdin or a file.
+- **Prune a clean copy, then build there.** This is what the Docker example above does, and it works for any tool that
+  packages what's in the directory (npm, Python, Helm, zip):
+
+  ```bash
+  git clone . build/pkg
+  shiplist prune package --dir build/pkg
+  rm -rf build/pkg/.git
+  (cd build/pkg && npm pack)
+  ```
+
+  Remove `.git` before you build: tools that ask git for the file list (a gemspec that runs `git ls-files`,
+  `cargo package`, setuptools-scm) would still see the files `prune` deleted.
+
+Then verify the package anyway: it catches anything the packaging tool adds on its own.
+
+### More places to use it
+
+- **Public mirrors of private code.** If you publish part of a private repository to a public one (docs, examples, an
+  SDK), verify the mirror before the push, so an internal file can't leak out.
+- **Helm charts.** `.helmignore` is a denylist, and charts are `.tgz` files.
+- **Lambda and serverless zips, and browser extensions.** Source maps, `.env` files and test fixtures end up in these
+  all the time.
+- **Static sites and docs.** Verify the build folder before it goes to S3 or Pages, so drafts and source maps stay out.
+- **Source tarballs** made with `git archive`, where `export-ignore` in `.gitattributes` is a denylist too.
+- **Composer packages and Go modules,** which are built from the repository itself: run `shiplist check` on the
+  repository, in the package's directory if it's in a monorepo.
 
 ## For coding agents
 

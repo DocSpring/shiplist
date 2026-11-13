@@ -1,0 +1,23 @@
+version: 1
+stages: [package]
+
+remove_before:
+  package:
+    include:
+      - .gitignore
+      - .github/
+      - .shiplist.yml
+      - tests/
+      - skills/
+      - AGENTS.md
+      - deny.toml
+      - rustfmt.toml
+      - {path: target/, untracked: true}
+
+keep:
+  include: [src/, Cargo.toml, Cargo.lock, README.md, LICENSE-MIT, LICENSE-APACHE]
+
+# What `cargo package` adds to the .crate
+build_output:
+  - Cargo.toml.orig
+  - .cargo_vcs_info.json

@@ -17,13 +17,23 @@ fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Every file git tracks, relative to `dir`, which must be the top of a git working tree.
-pub fn tracked_files(dir: &Path) -> Result<Vec<String>> {
+/// Every file git tracks under `dir`, relative to it. `dir` is the top of a git working tree, or a directory in one
+/// (such as a package in a monorepo) with its own config file, so a repository's config is never applied to one of its
+/// subdirectories.
+pub fn tracked_files(dir: &Path, config: &Path) -> Result<Vec<String>> {
+    let dir_abs = dir.canonicalize().with_context(|| format!("{} doesn't exist", dir.display()))?;
     let top = String::from_utf8(git(dir, &["rev-parse", "--show-toplevel"])?)?;
     let top = Path::new(top.trim()).canonicalize()?;
-    let dir_abs = dir.canonicalize().with_context(|| format!("{} doesn't exist", dir.display()))?;
     if top != dir_abs {
-        bail!("{} isn't the top of its git working tree ({}): run shiplist there", dir.display(), top.display());
+        let config_dir = config.canonicalize().ok().and_then(|c| c.parent().map(Path::to_path_buf));
+        if config_dir.as_deref() != Some(dir_abs.as_path()) {
+            bail!(
+                "{} is a directory inside the git working tree at {}: give it its own config in that directory, or \
+                 run shiplist at the top of the working tree",
+                dir.display(),
+                top.display()
+            );
+        }
     }
     let out = git(dir, &["ls-files", "-z"])?;
     let mut files: Vec<String> = out
@@ -36,9 +46,9 @@ pub fn tracked_files(dir: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-/// Whether the working tree has uncommitted changes to tracked files, or untracked files git doesn't ignore.
+/// Whether `dir` has uncommitted changes to tracked files, or untracked files git doesn't ignore.
 pub fn is_dirty(dir: &Path) -> Result<bool> {
-    Ok(!git(dir, &["status", "--porcelain"])?.is_empty())
+    Ok(!git(dir, &["status", "--porcelain", "--", "."])?.is_empty())
 }
 
 /// Every file and symlink under `dir` (not directories), relative to it, skipping any `.git` directory.

@@ -1,15 +1,19 @@
 # shiplist
 
-A Rust CLI that puts every file in a repository in exactly one list and removes each list before its build stage. It
+A Rust CLI that puts every file in a repository in exactly one list, removes each list before its build stage, and
+checks what shipped (a directory, a Docker image or a package) against the lists. It
 runs in other people's CI and Docker builds, and `prune` deletes files, so correctness comes before convenience.
 
 ## Layout
 
 - `src/config.rs`: `.shiplist.yml` parsing and validation. `src/pattern.rs`: pattern syntax and matching.
 - `src/classify.rs`: which lists claim a path, and `explain`. `src/check.rs`, `src/prune.rs`, `src/verify.rs`: the
-  commands. `src/image.rs`: reads a `docker save` tarball. `src/tree.rs`: git's file list and directory walks.
+  commands. `src/image.rs`: reads a `docker save` tarball. `src/archive.rs`: lists the files in a package
+  (tar, gzipped tar, zip, `.gem`, Hex), reading a zip's central directory itself rather than adding a zip crate. `src/tree.rs`: git's file list and directory walks.
   `src/main.rs`: the CLI and its text and JSON output.
 - `tests/cli.rs`: runs the binary against real git repositories in temp directories.
+- `.shiplist.yml`: shiplist's own config. CI checks the repository with it and verifies the `.crate` we publish, so
+  add each new top-level file to it (and to `include` in `Cargo.toml` if the crate needs it).
 - `skills/shiplist/SKILL.md`: the Agent Skill for people using shiplist (`npx skills add DocSpring/shiplist`).
 
 ## Design rules

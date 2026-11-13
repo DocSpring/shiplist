@@ -2,13 +2,13 @@
 name = "shiplist"
 version = "0.1.0"
 edition = "2024"
-description = "Put every file in a repository in exactly one list, and remove each list before its build stage"
+description = "Put every file in a repository in exactly one list, and check what ships in your Docker images and packages"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/DocSpring/shiplist"
 readme = "README.md"
-keywords = ["docker", "ci", "dockerignore", "files", "build"]
+keywords = ["docker", "ci", "packaging", "dockerignore", "release"]
 categories = ["command-line-utilities", "development-tools::build-utils"]
-exclude = [".github/"]
+include = ["src/", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [profile.release]
 strip = true

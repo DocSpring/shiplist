@@ -1,6 +1,6 @@
 ---
 name: shiplist
-description: Works with shiplist, the CLI that puts every file in a repository in exactly one list (removed before a build stage, or kept) so CI decides which files reach the tests and the Docker image. Fixes a failing `shiplist check` (a file in no list, in two lists, a stale pattern, a dead exception) or `shiplist verify`, finds why a test fails only in CI after `shiplist prune`, decides which list a new file belongs in, and sets shiplist up in a new repository's CI and image build. Use when a repository has a .shiplist.yml, when CI output mentions shiplist, or when someone wants to keep dev files, secrets or source maps out of a Docker image. Not for .dockerignore-only setups or image vulnerability scanning.
+description: Works with shiplist, the CLI that puts every file in a repository in exactly one list (removed before a build stage, or kept) so CI decides which files reach the tests, the Docker image and published packages. Fixes a failing `shiplist check` (a file in no list, in two lists, a stale pattern, a dead exception) or `shiplist verify` (on a build directory, an image or a package such as an npm tarball, gem, wheel or crate), finds why a test fails only in CI after `shiplist prune`, decides which list a new file belongs in, and sets shiplist up in a repository's CI, image build or release workflow. Use when a repository has a .shiplist.yml, when CI output mentions shiplist, or when someone wants to keep dev files, tests, secrets or source maps out of a Docker image or a package. Not for .dockerignore-only setups or vulnerability scanning.
 license: MIT OR Apache-2.0
 metadata:
   author: DocSpring
@@ -29,7 +29,7 @@ problems (exit 1) and errors (exit 2, `{"ok": false, "error": "..."}`).
 | `shiplist check` | See every file in no list or two, stale patterns and dead exceptions. Text output groups more than 20 unclassified files by top-level directory; JSON lists each one. |
 | `shiplist explain <path>...` | See which patterns match a path, which list it's in and whether each stage has it. Works for paths that don't exist yet. |
 | `shiplist list <stage>` | See the tracked files a stage gets (`--removed`: the ones it doesn't). |
-| `shiplist verify <stage> --dir D` or `--image app.tar --root /app` | Check a build directory or a `docker save` tarball. |
+| `shiplist verify <stage> --dir D`, `--image app.tar --root /app` or `--archive pkg.tgz --root package/` | Check a build directory, a `docker save` tarball or a package. |
 | `shiplist prune <stage>` | Delete a stage's files. CI only: see "Never" below. |
 
 Patterns are anchored at the repository root: `docs/` is a directory and everything in it, `*` and `?` never cross a
@@ -105,6 +105,24 @@ shiplist --config "$OLDPWD/.shiplist.yml" prune test --yes
 - `unexpected`: a file in no list that the build created. If the build makes it on purpose, add it to `build_output`;
   otherwise find out where it came from.
 
+## A package that fails verify
+
+The packaging tool's own settings decide what goes in the package (`files` in package.json, `.npmignore`, the gemspec's
+`files`, `MANIFEST.in` or the build backend's config, `include` in Cargo.toml, `.helmignore`). When `shiplist verify
+--archive` reports a file that shouldn't be in the package, fix those settings so the tool leaves it out, then rebuild
+and verify again. Don't move the file to `keep` because it's in the package: decide its list with the questions in "A
+file in no list", as for any file.
+
+- A file the packaging tool adds itself (a wheel's `dist-info/`, `PKG-INFO`, `Cargo.toml.orig`,
+  `.cargo_vcs_info.json`) goes in `build_output`. `build_output` only covers files no list claims, so if a broad pattern
+  such as `'.*'` claims it, name your dotfiles in that list instead.
+- Every file reported as unexpected under one folder (`package/`, `name-1.2.0/`): `--root` is missing or wrong.
+- A wheel from a `src/` layout or a compiled package (`.jar`, `.nupkg`) doesn't use the repository's paths: verify the
+  source package instead.
+
+When the repository's gemspec builds `spec.files` from `shiplist list package`, the lists already decide the gem's
+contents; a verify failure then means the gemspec adds files of its own.
+
 ## Never
 
 - Run `shiplist prune` in a developer's working copy, or set `CI=true` to get past its guard. It deletes files. Use a
@@ -142,3 +160,8 @@ shiplist --config "$OLDPWD/.shiplist.yml" prune test --yes
    <clean clone>` before the image build, then `shiplist verify production --image <saved image> --root <app dir>` with
    `forbid` patterns for files that must never ship (`'**/*.map'`, `'**/.env*'`) and `build_output` for what the build
    adds.
+
+For a package, use a `package` stage (`stages: [package]`, or `[test, package]` to prune before the tests too), and in
+the release workflow build the package and run `shiplist verify package --archive <file> --root <folder>` before
+publishing. In a monorepo, give each package its own `.shiplist.yml` in its directory and run shiplist there. The README
+has the build command and `--root` for each package type.

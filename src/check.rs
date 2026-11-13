@@ -47,7 +47,7 @@ impl std::fmt::Display for PatternRef {
 }
 
 /// Above this many unclassified files, the text output groups them by top-level directory.
-const GROUP_ABOVE: usize = 20;
+pub const GROUP_ABOVE: usize = 20;
 
 /// Lists up to `GROUP_ABOVE` paths one by one; above that, one line per top-level directory with its file count, and
 /// files at the root one by one.

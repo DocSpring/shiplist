@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use shiplist::config::{self, Config};
-use shiplist::{check, classify, image, prune, tree, verify};
+use shiplist::{archive, check, classify, image, prune, tree, verify};
 
 /// Put every file in a repository in exactly one list, and remove each list before its build stage.
 #[derive(Parser)]
@@ -71,19 +71,23 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Fail if a directory or a saved image has files that a stage shouldn't have
+    /// Fail if a directory, a saved image or a package has files that a stage shouldn't have
     Verify {
         /// A stage from the config's `stages`
         stage: String,
         /// A directory to check
-        #[arg(long, conflicts_with = "image", required_unless_present = "image")]
+        #[arg(long, conflicts_with_all = ["image", "archive"], required_unless_present_any = ["image", "archive"])]
         dir: Option<PathBuf>,
         /// A tarball from `docker save`
-        #[arg(long)]
+        #[arg(long, conflicts_with = "archive")]
         image: Option<PathBuf>,
-        /// Where the repository's files are inside the image
-        #[arg(long, requires = "image", default_value = "/")]
-        root: String,
+        /// A package or other archive: tar, .tar.gz/.tgz (npm, Python source, .crate, Helm), zip (wheel, .nupkg,
+        /// .jar), .gem or a Hex package
+        #[arg(long)]
+        archive: Option<PathBuf>,
+        /// Where the repository's files are inside the image or archive, such as /app or package/ (npm)
+        #[arg(long)]
+        root: Option<String>,
     },
 }
 
@@ -124,7 +128,7 @@ fn run(cli: Cli) -> Result<bool> {
     let config = Config::load(&cli.config)?;
     match cli.command {
         Command::Check { dir } => {
-            let files = tree::tracked_files(&dir)?;
+            let files = tree::tracked_files(&dir, &cli.config)?;
             let report = check::check(&config, &files);
             if cli.format == Format::Json {
                 print_json(&WithOk { ok: report.is_ok(), report: &report });
@@ -139,7 +143,7 @@ fn run(cli: Cli) -> Result<bool> {
         }
         Command::List { stage, removed, dir } => {
             let stage = config.stage_index(&stage)?;
-            let files = tree::tracked_files(&dir)?;
+            let files = tree::tracked_files(&dir, &cli.config)?;
             let mut listed = Vec::new();
             for file in &files {
                 let lists = classify::classify(&config, file);
@@ -183,20 +187,23 @@ fn run(cli: Cli) -> Result<bool> {
             // Walk the directory only when something needs it: it can hold far more files than git tracks
             let needs_walk = no_git || prune::has_untracked_globs(&config, stage_index);
             let walked = if needs_walk { tree::walk_files(&dir)? } else { Vec::new() };
-            let files = if no_git { walked.clone() } else { tree::tracked_files(&dir)? };
+            let files = if no_git { walked.clone() } else { tree::tracked_files(&dir, &cli.config)? };
             let plan = prune::plan(&config, &files, stage_index, no_git)?;
             let untracked = prune::untracked_paths(&config, &dir, stage_index, &walked);
             apply(&dir, &plan, &untracked, dry_run, &stage, cli.format)
         }
-        Command::Verify { stage, dir, image, root } => {
+        Command::Verify { stage, dir, image, archive, root } => {
             let stage_index = config.stage_index(&stage)?;
-            let (files, what) = match (dir, image) {
-                (Some(dir), _) => (tree::walk_files(&dir)?, dir.display().to_string()),
-                (None, Some(tarball)) => {
-                    let files = image::image_files(&tarball)?;
-                    (image::under_root(&files, &root), format!("{}:{root}", tarball.display()))
+            let (files, what) = match (dir, image, archive) {
+                (Some(dir), _, _) => {
+                    if root.is_some() {
+                        bail!("--root goes with --image or --archive, not --dir");
+                    }
+                    (tree::walk_files(&dir)?, dir.display().to_string())
                 }
-                (None, None) => unreachable!("clap requires --dir or --image"),
+                (None, Some(path), _) => under_root(image::image_files(&path)?, &path, root.as_deref())?,
+                (None, None, Some(path)) => under_root(archive::archive_files(&path)?, &path, root.as_deref())?,
+                (None, None, None) => unreachable!("clap requires --dir, --image or --archive"),
             };
             let report = verify::verify(&config, &files, stage_index);
             if cli.format == Format::Json {
@@ -217,9 +224,34 @@ fn run(cli: Cli) -> Result<bool> {
                 return Ok(true);
             }
             eprint!("{}", report.render(&stage));
+            if root.as_deref().unwrap_or("/").trim_matches('/').is_empty()
+                && let Some(top) = verify::single_top_dir(&files)
+            {
+                eprintln!(
+                    "Every file is under {top}/: if that's where the repository's files are, add `--root {top}/`."
+                );
+            }
             Ok(false)
         }
     }
+}
+
+/// The files under `root` in an image or archive, and a name for what was checked. Fails when nothing is under
+/// `root`, which usually means it's wrong, and names the top-level entries there are.
+fn under_root(
+    files: std::collections::BTreeSet<String>,
+    path: &Path,
+    root: Option<&str>,
+) -> Result<(Vec<String>, String)> {
+    let root = root.unwrap_or("/");
+    let under = image::under_root(&files, root);
+    if under.is_empty() && !files.is_empty() {
+        let mut top: Vec<&str> = files.iter().map(|f| f.split('/').next().unwrap_or(f)).collect();
+        top.dedup();
+        top.truncate(10);
+        bail!("{} has no files under {root}: its top level has {}", path.display(), top.join(", "));
+    }
+    Ok((under, format!("{}:{root}", path.display())))
 }
 
 fn print_explanation(e: &classify::Explanation) {
