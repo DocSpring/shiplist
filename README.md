@@ -165,6 +165,16 @@ COPY .shiplist.yml /tmp/.shiplist.yml
 RUN CI=true shiplist --config /tmp/.shiplist.yml prune on-premise --dir /app --no-git
 ```
 
+## For coding agents
+
+- **The skill.** `npx skills add DocSpring/shiplist` installs the shiplist [Agent Skill](https://agentskills.io) for
+  Claude Code, Codex, Cursor and other agents. It covers what agents get wrong when `shiplist check` fails in CI:
+  deciding which list a new file belongs in, fixing a file in two lists without deleting the pattern around it, and
+  fixing the code (not the config) when a test fails only after `prune`. It also walks through setting shiplist up.
+- **JSON output.** `--format json` on any command prints one JSON document on stdout, including for problems (exit 1)
+  and errors (exit 2).
+- **Working on shiplist itself:** read [AGENTS.md](AGENTS.md) for the design rules and how to test and release.
+
 ## Prior art
 
 - [check-manifest](https://github.com/mgedmin/check-manifest) checks that every file in a Python package's git

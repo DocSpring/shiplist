@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
+use serde_json::json;
 
 use shiplist::config::{self, Config};
 use shiplist::{check, classify, image, prune, tree, verify};
@@ -15,8 +17,18 @@ struct Cli {
     #[arg(long, global = true, default_value = config::DEFAULT_PATH)]
     config: PathBuf,
 
+    /// Output format. `json` prints one JSON document on stdout, also for problems and errors
+    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
+    format: Format,
+
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Format {
+    Text,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -77,14 +89,31 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let format = cli.format;
     match run(cli) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),
         Err(e) => {
-            eprintln!("shiplist: {e:#}");
+            if format == Format::Json {
+                print_json(&json!({ "ok": false, "error": format!("{e:#}") }));
+            } else {
+                eprintln!("shiplist: {e:#}");
+            }
             ExitCode::from(2)
         }
     }
+}
+
+fn print_json(value: &impl Serialize) {
+    println!("{}", serde_json::to_string_pretty(value).expect("the reports always serialize"));
+}
+
+/// A report with `ok` in front of its fields.
+#[derive(Serialize)]
+struct WithOk<'a, T: Serialize> {
+    ok: bool,
+    #[serde(flatten)]
+    report: &'a T,
 }
 
 fn in_ci() -> bool {
@@ -97,6 +126,10 @@ fn run(cli: Cli) -> Result<bool> {
         Command::Check { dir } => {
             let files = tree::tracked_files(&dir)?;
             let report = check::check(&config, &files);
+            if cli.format == Format::Json {
+                print_json(&WithOk { ok: report.is_ok(), report: &report });
+                return Ok(report.is_ok());
+            }
             if report.is_ok() {
                 println!("{} files, each in exactly one list", files.len());
                 return Ok(true);
@@ -107,20 +140,33 @@ fn run(cli: Cli) -> Result<bool> {
         Command::List { stage, removed, dir } => {
             let stage = config.stage_index(&stage)?;
             let files = tree::tracked_files(&dir)?;
+            let mut listed = Vec::new();
             for file in &files {
                 let lists = classify::classify(&config, file);
                 let [id] = lists.as_slice() else {
                     bail!("{file} isn't in exactly one list: run `shiplist check`");
                 };
                 if classify::present_at(*id, stage) != removed {
+                    listed.push(file);
+                }
+            }
+            if cli.format == Format::Json {
+                print_json(&json!({ "stage": config.stages[stage], "removed": removed, "files": listed }));
+            } else {
+                for file in listed {
                     println!("{file}");
                 }
             }
             Ok(true)
         }
         Command::Explain { paths } => {
-            for path in &paths {
-                explain(&config, path);
+            let explanations: Vec<_> = paths.iter().map(|p| classify::explain(&config, p)).collect();
+            if cli.format == Format::Json {
+                print_json(&explanations);
+            } else {
+                for e in &explanations {
+                    print_explanation(e);
+                }
             }
             Ok(true)
         }
@@ -140,7 +186,7 @@ fn run(cli: Cli) -> Result<bool> {
             let files = if no_git { walked.clone() } else { tree::tracked_files(&dir)? };
             let plan = prune::plan(&config, &files, stage_index, no_git)?;
             let untracked = prune::untracked_paths(&config, &dir, stage_index, &walked);
-            Ok(apply(&dir, &plan, &untracked, dry_run, &stage)?)
+            apply(&dir, &plan, &untracked, dry_run, &stage, cli.format)
         }
         Command::Verify { stage, dir, image, root } => {
             let stage_index = config.stage_index(&stage)?;
@@ -153,6 +199,19 @@ fn run(cli: Cli) -> Result<bool> {
                 (None, None) => unreachable!("clap requires --dir or --image"),
             };
             let report = verify::verify(&config, &files, stage_index);
+            if cli.format == Format::Json {
+                print_json(&json!({
+                    "ok": report.is_ok(),
+                    "stage": stage,
+                    "target": what,
+                    "files": report.files,
+                    "forbidden": report.forbidden,
+                    "removed_but_present": report.removed_but_present,
+                    "unexpected": report.unexpected,
+                    "conflicts": report.conflicts,
+                }));
+                return Ok(report.is_ok());
+            }
             if report.is_ok() {
                 println!("{what}: {} files, all allowed at stage {stage}", files.len());
                 return Ok(true);
@@ -163,54 +222,56 @@ fn run(cli: Cli) -> Result<bool> {
     }
 }
 
-fn explain(config: &Config, path: &str) {
-    println!("{path}");
-    let matches = classify::matches(config, path);
-    let claiming: Vec<_> = matches.iter().filter(|m| m.claims()).collect();
-    for m in &matches {
-        if m.includes.is_empty() {
-            continue;
-        }
-        let name = config.list_name(m.list.id);
-        if m.excludes.is_empty() {
-            println!("  {name}: include {}", m.includes.join(", "));
+fn print_explanation(e: &classify::Explanation) {
+    println!("{}", e.path);
+    for m in &e.matches {
+        if m.exclude.is_empty() {
+            println!("  {}: include {}", m.list, m.include.join(", "));
         } else {
-            println!("  {name}: include {}, but exclude {}", m.includes.join(", "), m.excludes.join(", "));
+            println!("  {}: include {}, but exclude {}", m.list, m.include.join(", "), m.exclude.join(", "));
         }
     }
-    match claiming.as_slice() {
+    match e.lists.as_slice() {
         [] => println!("  => in no list"),
-        [m] => {
-            let fate = match m.list.id {
-                config::ListId::Keep => "kept at every stage".to_string(),
-                config::ListId::RemoveBefore(i) => format!("removed before {}", config.stages[i]),
-            };
-            println!("  => {}: {fate}", config.list_name(m.list.id));
-        }
-        _ => println!(
-            "  => in {} lists: {}",
-            claiming.len(),
-            claiming.iter().map(|m| config.list_name(m.list.id)).collect::<Vec<_>>().join(", ")
-        ),
+        [list] => match e.stages.iter().find(|s| !s.present) {
+            None => println!("  => {list}: kept at every stage"),
+            Some(s) => println!("  => {list}: removed before {}", s.stage),
+        },
+        lists => println!("  => in {} lists: {}", lists.len(), lists.join(", ")),
     }
 }
 
-fn apply(dir: &Path, plan: &prune::Plan, untracked: &[String], dry_run: bool, stage: &str) -> Result<bool> {
+fn apply(
+    dir: &Path,
+    plan: &prune::Plan,
+    untracked: &[String],
+    dry_run: bool,
+    stage: &str,
+    format: Format,
+) -> Result<bool> {
     let verb = if dry_run { "would remove" } else { "removed" };
-    let (mut dirs, mut files) = (0, 0);
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
     for d in &plan.dirs {
         if dry_run || prune::remove(dir, d)? {
-            println!("{verb} {d}/");
-            dirs += 1;
+            dirs.push(d.clone());
         }
     }
     for f in plan.files.iter().chain(untracked) {
         let is_dir = dir.join(f).is_dir();
         if dry_run || prune::remove(dir, f)? {
-            println!("{verb} {f}{}", if is_dir { "/" } else { "" });
-            if is_dir { dirs += 1 } else { files += 1 }
+            if is_dir { dirs.push(f.clone()) } else { files.push(f.clone()) }
         }
     }
-    println!("{verb} {dirs} directories and {files} files for stage {stage}");
+    if format == Format::Json {
+        print_json(&json!({ "stage": stage, "dry_run": dry_run, "directories": dirs, "files": files }));
+        return Ok(true);
+    }
+    for d in &dirs {
+        println!("{verb} {d}/");
+    }
+    for f in &files {
+        println!("{verb} {f}");
+    }
+    println!("{verb} {} directories and {} files for stage {stage}", dirs.len(), files.len());
     Ok(true)
 }

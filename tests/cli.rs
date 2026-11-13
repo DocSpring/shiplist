@@ -167,7 +167,7 @@ fn prune_test_then_production() {
     assert!(o.status.success(), "{}", stderr(&o));
     assert_eq!(
         stdout(&o),
-        "removed assets/\nremoved docs/\nremoved .env.development\nremoved node_modules/\nremoved 3 directories and 1 files for stage test\n"
+        "removed assets/\nremoved docs/\nremoved node_modules/\nremoved .env.development\nremoved 3 directories and 1 files for stage test\n"
     );
     assert!(!r.path().join("docs").exists());
     assert!(r.path().join("test/app_test.rb").exists());
@@ -227,4 +227,64 @@ fn verify_a_directory_and_prune_without_git() {
     assert!(o.status.success(), "{}", stderr(&o));
     assert!(!c.join("test").exists());
     assert!(c.join("public/app.js").exists());
+}
+
+fn json(o: &Output) -> serde_json::Value {
+    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {}", stdout(o)))
+}
+
+#[test]
+fn json_output() {
+    let r = repo();
+    let o = shiplist(r.path(), &["--format", "json", "check"], false);
+    assert!(o.status.success());
+    let v = json(&o);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["files"], 10);
+
+    write(r.path(), "config/rates.yml", "rate: 1\n");
+    git(r.path(), &["add", "-A"]);
+    let o = shiplist(r.path(), &["check", "--format", "json"], false);
+    assert_eq!(o.status.code(), Some(1));
+    let v = json(&o);
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["unclassified"], serde_json::json!(["config/rates.yml"]));
+    assert_eq!(v["conflicts"], serde_json::json!([]));
+    assert!(o.stderr.is_empty());
+
+    let o = shiplist(r.path(), &["--format", "json", "explain", "bin/server", "nowhere.txt"], false);
+    let v = json(&o);
+    assert_eq!(v[0]["lists"], serde_json::json!(["keep"]));
+    assert_eq!(
+        v[0]["matches"][0],
+        serde_json::json!({"list": "remove_before.production", "include": ["bin/"], "exclude": ["bin/server"], "claims": false})
+    );
+    assert_eq!(
+        v[0]["stages"],
+        serde_json::json!([{"stage": "test", "present": true}, {"stage": "production", "present": true}])
+    );
+    assert_eq!(v[1]["lists"], serde_json::json!([]));
+
+    let o = shiplist(r.path(), &["--format", "json", "list", "staging"], false);
+    assert_eq!(o.status.code(), Some(2));
+    let v = json(&o);
+    assert_eq!(v["ok"], false);
+    assert!(v["error"].as_str().unwrap().contains("unknown stage"));
+}
+
+#[test]
+fn groups_a_long_list_of_unclassified_files() {
+    let r = repo();
+    for i in 0..25 {
+        write(r.path(), &format!("vendor/lib{i}.rb"), "\n");
+    }
+    write(r.path(), "Makefile", "\n");
+    git(r.path(), &["add", "-A"]);
+    let o = shiplist(r.path(), &["check"], false);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        stderr(&o),
+        "26 files in no list, grouped by top-level directory (`shiplist check --format json` lists each one). \
+         Add each file to exactly one list:\n  Makefile\n  vendor/  (25 files)\n\n"
+    );
 }
