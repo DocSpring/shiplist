@@ -24,11 +24,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check the tag matches Cargo.toml
+      - name: Check the tag matches Cargo.toml and the action's default version
         run: |
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          action_version="$(sed -n "s/^    default: '\(.*\)'$/\1/p" action.yml)"
+          if [ "v$action_version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match action.yml's default version $action_version" >&2
             exit 1
           fi
       - if: runner.os == 'Linux'
@@ -65,3 +70,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes shiplist-*.tar.gz shiplist-*.tar.gz.sha256
+
+  # The GitHub Action at this tag installs this release by default
+  action:
+    needs: release
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./
+      - run: test "$(shiplist --version)" = "shiplist ${GITHUB_REF_NAME#v}"

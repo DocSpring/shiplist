@@ -36,13 +36,21 @@ or out of your image: any overlap fails the check, and someone decides.
 
 ## Install
 
-Download a binary for Linux (x86_64 or arm64, static) or macOS from the
-[releases](https://github.com/DocSpring/shiplist/releases), or install it from
-[crates.io](https://crates.io/crates/shiplist) with Cargo:
+With Homebrew, on macOS or Linux:
+
+```bash
+brew install docspring/tap/shiplist
+```
+
+With Cargo, from [crates.io](https://crates.io/crates/shiplist):
 
 ```bash
 cargo install shiplist --locked
 ```
+
+Or download a binary for Linux (x86_64 or arm64, static) or macOS from the
+[releases](https://github.com/DocSpring/shiplist/releases). Each release has build provenance attestations, which
+`gh attestation verify <file> --repo DocSpring/shiplist` checks.
 
 ## Config
 

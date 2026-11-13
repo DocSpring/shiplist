@@ -7,6 +7,8 @@ remove_before:
       - .gitignore
       - .github/
       - .shiplist.yml
+      - action.yml
+      - scripts/
       - tests/
       - skills/
       - AGENTS.md

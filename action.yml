@@ -1,0 +1,44 @@
+name: Install shiplist
+description: Installs a shiplist release on the runner, checked against its build provenance before it runs
+author: DocSpring
+branding:
+  icon: list
+  color: blue
+
+inputs:
+  version:
+    description: The shiplist version to install, such as 0.1.0. Defaults to the release this action comes from.
+    default: '0.1.0'
+
+runs:
+  using: composite
+  steps:
+    - name: Install shiplist
+      shell: bash
+      env:
+        SHIPLIST_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64) target=x86_64-unknown-linux-musl ;;
+          Linux-ARM64) target=aarch64-unknown-linux-musl ;;
+          macOS-ARM64) target=aarch64-apple-darwin ;;
+          macOS-X64) target=x86_64-apple-darwin ;;
+          *)
+            echo "shiplist has no release for ${RUNNER_OS} ${RUNNER_ARCH} (Linux and macOS, x86_64 and arm64)" >&2
+            exit 1
+            ;;
+        esac
+        version="${SHIPLIST_VERSION#v}"
+        name="shiplist-v${version}-${target}"
+        dir="${RUNNER_TEMP}/shiplist"
+        mkdir -p "$dir"
+        gh release download "v${version}" --repo DocSpring/shiplist --pattern "${name}.tar.gz" --dir "$dir" --clobber
+        # Only a binary that shiplist's release workflow built and attested gets this far
+        gh attestation verify "${dir}/${name}.tar.gz" --repo DocSpring/shiplist \
+          --signer-workflow DocSpring/shiplist/.github/workflows/release.yml
+        tar -xzf "${dir}/${name}.tar.gz" -C "$dir" --strip-components=1
+        rm "${dir}/${name}.tar.gz"
+        echo "$dir" >> "$GITHUB_PATH"
+        "${dir}/shiplist" --version

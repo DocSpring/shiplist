@@ -15,6 +15,8 @@ runs in other people's CI and Docker builds, and `prune` deletes files, so corre
 - `.shiplist.yml`: shiplist's own config. CI checks the repository with it and verifies the `.crate` we publish, so
   add each new top-level file to it (and to `include` in `Cargo.toml` if the crate needs it).
 - `skills/shiplist/SKILL.md`: the Agent Skill for people using shiplist (`npx skills add DocSpring/shiplist`).
+- `action.yml`: the GitHub Action, which installs a release and checks its build provenance attestation.
+- `scripts/homebrew-formula`: prints the formula for `DocSpring/homebrew-tap` (`brew install docspring/tap/shiplist`).
 
 ## Design rules
 
@@ -50,11 +52,14 @@ These are why the tool exists. Don't change them to make a feature simpler; rais
 
 ## Releasing
 
-1. Bump `version` in `Cargo.toml` and `metadata.version` in `skills/shiplist/SKILL.md` (a test checks they match), then
-   run `cargo build` to update `Cargo.lock`.
+1. Bump `version` in `Cargo.toml`, `metadata.version` in `skills/shiplist/SKILL.md` (a test checks they match) and
+   the `version` input's default in `action.yml` (the release workflow checks it), then run `cargo build` to update
+   `Cargo.lock`.
 2. Commit, then tag `vX.Y.Z` on that commit and push the tag. `.github/workflows/release.yml` builds the Linux (musl,
-   x86_64 and arm64) and macOS binaries, attests them and creates the GitHub release with checksums.
+   x86_64 and arm64) and macOS binaries, attests them, creates the GitHub release with checksums, and then installs
+   it with the action on Linux and macOS.
 3. `cargo publish` from the tagged commit.
+4. `scripts/homebrew-formula X.Y.Z > <homebrew-tap checkout>/Formula/shiplist.rb`, then commit and push the tap.
 
 ## Public repository
 

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Prints the Homebrew formula for a released version, with the checksums from its GitHub release. The formula lives in
+# DocSpring/homebrew-tap (brew install docspring/tap/shiplist):
+#
+#   scripts/homebrew-formula 0.1.0 > ../homebrew-tap/Formula/shiplist.rb
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "Usage: scripts/homebrew-formula <version>" >&2
+  exit 1
+fi
+version="${1#v}"
+dir="$(mktemp -d)"
+trap 'rm -rf "$dir"' EXIT
+gh release download "v${version}" --repo DocSpring/shiplist --pattern '*.sha256' --dir "$dir"
+
+sha() {
+  local file="${dir}/shiplist-v${version}-$1.tar.gz.sha256"
+  if [ ! -f "$file" ]; then
+    echo "The v${version} release has no checksum for $1" >&2
+    exit 1
+  fi
+  cut -d' ' -f1 "$file"
+}
+
+url="https://github.com/DocSpring/shiplist/releases/download/v${version}/shiplist-v${version}"
+cat <<EOF
+class Shiplist < Formula
+  desc "Checks every file in a repository is in one list, and what ships in images"
+  homepage "https://github.com/DocSpring/shiplist"
+  license any_of: ["MIT", "Apache-2.0"]
+
+  on_macos do
+    on_arm do
+      url "${url}-aarch64-apple-darwin.tar.gz"
+      sha256 "$(sha aarch64-apple-darwin)"
+    end
+    on_intel do
+      url "${url}-x86_64-apple-darwin.tar.gz"
+      sha256 "$(sha x86_64-apple-darwin)"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "${url}-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "$(sha aarch64-unknown-linux-musl)"
+    end
+    on_intel do
+      url "${url}-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "$(sha x86_64-unknown-linux-musl)"
+    end
+  end
+
+  def install
+    bin.install "shiplist"
+  end
+
+  test do
+    assert_match "shiplist #{version}", shell_output("#{bin}/shiplist --version")
+  end
+end
+EOF
