@@ -1,6 +1,6 @@
 [package]
 name = "shiplist"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Put every file in a repository in exactly one list, and check what ships in your Docker images and packages"
 license = "MIT OR Apache-2.0"

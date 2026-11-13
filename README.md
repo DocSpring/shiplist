@@ -48,6 +48,13 @@ With Cargo, from [crates.io](https://crates.io/crates/shiplist):
 cargo install shiplist --locked
 ```
 
+In GitHub Actions, the action installs the release with its tag, after checking the binary's build provenance:
+
+```yaml
+- uses: DocSpring/shiplist@v0.1.1
+- run: shiplist check
+```
+
 Or download a binary for Linux (x86_64 or arm64, static) or macOS from the
 [releases](https://github.com/DocSpring/shiplist/releases). Each release has build provenance attestations, which
 `gh attestation verify <file> --repo DocSpring/shiplist` checks.

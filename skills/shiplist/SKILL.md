@@ -4,7 +4,7 @@ description: Works with shiplist, the CLI that puts every file in a repository i
 license: MIT OR Apache-2.0
 metadata:
   author: DocSpring
-  version: "0.1.0"
+  version: "0.1.1"
 ---
 
 # shiplist
