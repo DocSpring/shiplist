@@ -37,10 +37,11 @@ or out of your image: any overlap fails the check, and someone decides.
 ## Install
 
 Download a binary for Linux (x86_64 or arm64, static) or macOS from the
-[releases](https://github.com/DocSpring/shiplist/releases), or build it with Cargo:
+[releases](https://github.com/DocSpring/shiplist/releases), or install it from
+[crates.io](https://crates.io/crates/shiplist) with Cargo:
 
 ```bash
-cargo install --git https://github.com/DocSpring/shiplist --locked
+cargo install shiplist --locked
 ```
 
 ## Config
