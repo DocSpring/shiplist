@@ -47,10 +47,14 @@ Decide by what reads the file, not by what makes CI pass. Search the code for it
    production doesn't need it.
 4. It could hold a secret, credentials, customer or personal data, internal notes or anything a person outside the
    company shouldn't read: it must not go in `keep`. If you can't tell, ask the person you're working with before
-   choosing, and say why.
+   choosing, and say why. If it plainly holds secrets or real personal data, it probably shouldn't be in git at all:
+   put it in the first stage's list so it can't ship, and tell the person. Deleting it from the repository and its
+   history, rotating a secret and adding it to `.gitignore` are their decisions.
 
-Use the narrowest pattern that says what you mean: the file's path, or its directory when it starts a new folder of
-similar files. Don't widen an existing pattern or add `*` to get a group of unrelated files through.
+Use the file's own path by default, so the next file added beside it gets its own decision. Use a directory pattern
+only when the folder has one clear purpose and every file that will ever go in it belongs in the same list, such as a
+folder of test fixtures. Never use one for folders of data, exports, tools or anything that could hold sensitive files.
+Don't widen an existing pattern or add `*` to get a group of unrelated files through.
 
 When a broad pattern in one list already covers the new file's directory but the file belongs elsewhere (a dev script
 under a kept `app/`), add both entries: the file in the right list's `include`, and in the other list's `exclude`.
@@ -65,6 +69,7 @@ it still covers the files around this one.
 
 A pattern matches no tracked file because a file was deleted or renamed.
 
+- Already covered: if a broader pattern in the same list matches the files this one was for, delete it.
 - Renamed or moved: point the pattern at the new path, and check the new location still belongs in that list.
 - Deleted: remove the pattern, then run `shiplist check` again. The other entry of the pair (an `exclude` elsewhere)
   usually turns into a dead exception; remove that too.
